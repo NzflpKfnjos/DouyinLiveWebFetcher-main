@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>直播聊天倒计时看板</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-blue"></div>
+  <div class="ambient ambient-amber"></div>
+
+  <main class="app-shell compact-shell">
+    <section class="workspace-grid">
+      <section class="chat-panel glass-card" aria-labelledby="chatTitle">
+        <div class="panel-header">
+          <div>
+            <!-- <p class="section-kicker">WebcastChatMessage</p> -->
+            <h1 id="chatTitle">实时聊天</h1>
+          </div>
+          <button id="clearButton" class="secondary-button" type="button">清空视图</button>
+        </div>
+        <div id="messageList" class="message-list" aria-live="polite" aria-label="实时聊天消息"></div>
+      </section>
+
+      <aside class="wheel-panel glass-card" aria-labelledby="countdownTitle">
+        <div class="panel-header compact">
+          <div>
+            <!-- <p class="section-kicker">Countdown Select</p> -->
+            <h2 id="countdownTitle">倒计时选人</h2>
+          </div>
+        </div>
+
+        <div class="countdown-card">
+          <span class="countdown-label">剩余时间</span>
+          <strong id="countdownDisplay">10</strong>
+          <p id="countdownStatus" role="status" aria-live="polite">点击开始倒计时，结束后会选中最新一条消息的用户。</p>
+        </div>
+
+        <button id="countdownButton" class="primary-button draw-button" type="button">开始倒计时</button>
+
+        <div class="draw-result result-focus-card">
+          <span>最终选中</span>
+          <div id="winnerDisplay" class="winner-display">等待开始</div>
+          <!-- <strong id="winnerName">暂无</strong>
+          <p id="winnerMeta">倒计时结束时，将读取当前最新一条聊天消息的发送用户。</p> -->
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <template id="messageTemplate">
+    <article class="message-card">
+      <div class="message-avatar" aria-hidden="true"></div>
+      <div class="message-body">
+        <div class="message-top">
+          <strong class="message-user"></strong>
+          <div class="message-meta">
+            <span class="message-kind"></span>
+            <time class="message-time"></time>
+          </div>
+        </div>
+        <p class="message-content"></p>
+      </div>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

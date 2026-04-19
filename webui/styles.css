@@ -214,6 +214,55 @@ button {
   padding: 20px;
 }
 
+.status-card {
+  display: grid;
+  gap: 14px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.status-item,
+.status-list {
+  padding: 14px 16px;
+  border: 1px solid rgba(30, 64, 175, 0.12);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.status-item span,
+.status-list span {
+  display: block;
+  color: var(--subtle);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.status-item strong {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--heading);
+  font-size: 16px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-list pre {
+  margin: 8px 0 0;
+  overflow: auto;
+  color: var(--text);
+  font-family: "Fira Code", "Microsoft YaHei", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .panel-header {
   display: flex;
   justify-content: space-between;
@@ -302,9 +351,7 @@ h2 {
 }
 
 .message-card {
-  display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
-  gap: 14px;
+  display: block;
   padding: 16px;
   border: 1px solid rgba(30, 64, 175, 0.1);
   border-radius: var(--radius-lg);
@@ -315,20 +362,6 @@ h2 {
 .message-card:hover {
   border-color: var(--line-strong);
   background: rgba(255, 255, 255, 0.9);
-}
-
-.message-avatar {
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 16px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--primary), var(--primary-2));
-  box-shadow: 0 12px 24px rgba(30, 64, 175, 0.2);
-  font-family: "Fira Code", monospace;
-  font-size: 15px;
-  font-weight: 700;
 }
 
 .message-top {
@@ -391,11 +424,6 @@ h2 {
 .message-card[data-kind="gift"]:hover {
   border-color: rgba(245, 158, 11, 0.34);
   background: linear-gradient(180deg, rgba(255, 247, 237, 0.96), rgba(255, 255, 255, 0.92));
-}
-
-.message-card[data-kind="gift"] .message-avatar {
-  background: linear-gradient(135deg, #f59e0b, #f97316);
-  box-shadow: 0 12px 24px rgba(245, 158, 11, 0.24);
 }
 
 .message-card[data-kind="gift"] .message-kind {
@@ -601,6 +629,10 @@ h2 {
   }
 
   .message-card {
+    grid-template-columns: 1fr;
+  }
+
+  .status-grid {
     grid-template-columns: 1fr;
   }
 

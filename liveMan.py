@@ -109,13 +109,14 @@ def generateMsToken(length=182):
 class DouyinLiveWebFetcher:
     
     def __init__(self, live_id, abogus_file='a_bogus.js', event_handler: Optional[Callable[[dict], None]] = None,
-                 verbose=True):
+                 verbose=True, cookie: str = ''):
         """
         直播间弹幕抓取对象
         :param live_id: 直播间的直播id，打开直播间web首页的链接如：https://live.douyin.com/261378947940，
                         其中的261378947940即是live_id
         """
         self.abogus_file = abogus_file
+        self.cookie = (cookie or '').strip()
         self.__ttwid = None
         self.__room_id = None
         self.session = requests.Session()
@@ -129,6 +130,9 @@ class DouyinLiveWebFetcher:
         self.headers = {
             'User-Agent': self.user_agent
         }
+        if self.cookie:
+            self.headers['Cookie'] = self.cookie
+            self.session.headers.update({'Cookie': self.cookie})
     
     def start(self):
         self._connectWebSocket()
@@ -157,7 +161,46 @@ class DouyinLiveWebFetcher:
             self.event_handler(event)
         except Exception as err:
             self._log("Event handler error:", err)
-    
+
+    @staticmethod
+    def _parse_cookie_string(cookie: str) -> dict:
+        cookies = {}
+        for item in (cookie or '').split(';'):
+            part = item.strip()
+            if not part or '=' not in part:
+                continue
+            key, value = part.split('=', 1)
+            key = key.strip()
+            if not key:
+                continue
+            cookies[key] = value.strip()
+        return cookies
+
+    def _get_cookie_value(self, name: str) -> str:
+        value = self.session.cookies.get(name)
+        if value:
+            return value
+        return self._parse_cookie_string(self.cookie).get(name, '')
+
+    def _build_cookie_header(self, extra: Optional[dict] = None) -> str:
+        cookies = self._parse_cookie_string(self.cookie)
+        for key, value in self.session.cookies.get_dict().items():
+            cookies[key] = value
+        if extra:
+            for key, value in extra.items():
+                if value:
+                    cookies[key] = value
+        return '; '.join(f'{key}={value}' for key, value in cookies.items())
+
+    def _get_webcast_did(self) -> str:
+        for name in ('webcast_did', 'user_unique_id', 'webcast_user_unique_id'):
+            value = self._get_cookie_value(name)
+            if value:
+                return value
+        if not hasattr(self, '_webcast_did'):
+            self._webcast_did = str(random.randrange(10 ** 18, 10 ** 19))
+        return self._webcast_did
+
     @property
     def ttwid(self):
         """
@@ -166,9 +209,15 @@ class DouyinLiveWebFetcher:
         """
         if self.__ttwid:
             return self.__ttwid
+        cookie_ttwid = self._get_cookie_value('ttwid')
+        if cookie_ttwid:
+            self.__ttwid = cookie_ttwid
+            return self.__ttwid
         headers = {
             "User-Agent": self.user_agent,
         }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
         try:
             response = self.session.get(self.live_url, headers=headers)
             response.raise_for_status()
@@ -187,9 +236,14 @@ class DouyinLiveWebFetcher:
         if self.__room_id:
             return self.__room_id
         url = self.live_url + self.live_id
+        request_cookie = self._build_cookie_header({
+            'ttwid': self.ttwid,
+            'msToken': self._get_cookie_value('msToken') or generateMsToken(),
+            '__ac_nonce': self._get_cookie_value('__ac_nonce') or '0123407cc00a9e438deb4',
+        })
         headers = {
             "User-Agent": self.user_agent,
-            "cookie": f"ttwid={self.ttwid}&msToken={generateMsToken()}; __ac_nonce=0123407cc00a9e438deb4",
+            "cookie": request_cookie,
         }
         try:
             response = self.session.get(url, headers=headers)
@@ -209,6 +263,9 @@ class DouyinLiveWebFetcher:
         """
         获取 __ac_nonce
         """
+        existing = self._get_cookie_value("__ac_nonce")
+        if existing:
+            return existing
         resp_cookies = self.session.get(self.host, headers=self.headers).cookies
         return resp_cookies.get("__ac_nonce")
     
@@ -235,7 +292,7 @@ class DouyinLiveWebFetcher:
         room_status: 2 直播已结束
         room_status: 0 直播进行中
         """
-        msToken = generateMsToken()
+        msToken = self._get_cookie_value('msToken') or generateMsToken()
         nonce = self.get_ac_nonce()
         signature = self.get_ac_signature(nonce)
         url = ('https://live.douyin.com/webcast/room/web/enter/?aid=6383'
@@ -252,7 +309,12 @@ class DouyinLiveWebFetcher:
         headers = self.headers.copy()
         headers.update({
             'Referer': f'https://live.douyin.com/{self.live_id}',
-            'Cookie': f'ttwid={self.ttwid};__ac_nonce={nonce}; __ac_signature={signature}',
+            'Cookie': self._build_cookie_header({
+                'ttwid': self.ttwid,
+                '__ac_nonce': nonce,
+                '__ac_signature': signature,
+                'msToken': msToken,
+            }),
         })
         resp = self.session.get(url, headers=headers)
         data = resp.json().get('data')
@@ -277,6 +339,15 @@ class DouyinLiveWebFetcher:
         """
         连接抖音直播间websocket服务器，请求直播间数据
         """
+        now_ms = int(time.time() * 1000)
+        user_unique_id = self._get_webcast_did()
+        wrds_v = random.randrange(10 ** 18, 10 ** 19)
+        cursor = f"d-1_u-1_fh-{wrds_v}_t-{now_ms}_r-1"
+        internal_ext = (
+            f"internal_src:dim|wss_push_room_id:{self.room_id}|wss_push_did:{user_unique_id}"
+            f"|first_req_ms:{now_ms}|fetch_time:{now_ms}|seq:1|wss_info:0-{now_ms}-0-0|"
+            f"wrds_v:{wrds_v}"
+        )
         wss = ("wss://webcast100-ws-web-lq.douyin.com/webcast/im/push/v2/?app_name=douyin_web"
                "&version_code=180800&webcast_sdk_version=1.0.14-beta.0"
                "&update_version_code=1.0.14-beta.0&compress=gzip&device_platform=web&cookie_enabled=true"
@@ -285,19 +356,21 @@ class DouyinLiveWebFetcher:
                "&browser_version=5.0%20(Windows%20NT%2010.0;%20Win64;%20x64)%20AppleWebKit/537.36%20(KHTML,"
                "%20like%20Gecko)%20Chrome/126.0.0.0%20Safari/537.36"
                "&browser_online=true&tz_name=Asia/Shanghai"
-               "&cursor=d-1_u-1_fh-7392091211001140287_t-1721106114633_r-1"
-               f"&internal_ext=internal_src:dim|wss_push_room_id:{self.room_id}|wss_push_did:7319483754668557238"
-               f"|first_req_ms:1721106114541|fetch_time:1721106114633|seq:1|wss_info:0-1721106114633-0-0|"
-               f"wrds_v:7392094459690748497"
+               f"&cursor={cursor}"
+               f"&internal_ext={internal_ext}"
                f"&host=https://live.douyin.com&aid=6383&live_id=1&did_rule=3&endpoint=live_pc&support_wrds=1"
-               f"&user_unique_id=7319483754668557238&im_path=/webcast/im/fetch/&identity=audience"
-               f"&need_persist_msg_count=15&insert_task_id=&live_reason=&room_id={self.room_id}&heartbeatDuration=0")
+               f"&user_unique_id={user_unique_id}&im_path=/webcast/im/fetch/&identity=audience"
+               f"&need_persist_msg_count=15&fetch_rule=1&insert_task_id=&live_reason=&room_id={self.room_id}"
+               f"&heartbeatDuration=0")
         
         signature = generateSignature(wss)
         wss += f"&signature={signature}"
         
         headers = {
-            "cookie": f"ttwid={self.ttwid}",
+            "cookie": self._build_cookie_header({
+                'ttwid': self.ttwid,
+                'msToken': self._get_cookie_value('msToken'),
+            }),
             'user-agent': self.user_agent,
         }
         self.ws = websocket.WebSocketApp(wss,
@@ -368,7 +441,6 @@ class DouyinLiveWebFetcher:
             try:
                 parser = {
                     'WebcastChatMessage': self._parseChatMsg,  # 聊天消息
-                    'WebcastGiftMessage': self._parseGiftMsg,  # 礼物消息
                     'WebcastLikeMessage': self._parseLikeMsg,  # 点赞消息
                     'WebcastMemberMessage': self._parseMemberMsg,  # 进入直播间消息
                     'WebcastSocialMessage': self._parseSocialMsg,  # 关注消息
@@ -431,13 +503,17 @@ class DouyinLiveWebFetcher:
         user_name = message.user.nick_name
         count = message.count
         self._log(f"【点赞msg】{user_name} 点了{count}个赞")
-    
+
     def _parseMemberMsg(self, payload):
         '''进入直播间消息'''
         message = MemberMessage().parse(payload)
         user_name = message.user.nick_name
         user_id = message.user.id
-        gender = ["女", "男"][message.user.gender]
+        gender = {
+            0: "unknown",
+            1: "male",
+            2: "female",
+        }.get(message.user.gender, str(message.user.gender))
         self._log(f"【进场msg】[{user_id}][{gender}]{user_name} 进入了直播间")
     
     def _parseSocialMsg(self, payload):
@@ -500,33 +576,3 @@ class DouyinLiveWebFetcher:
         adaptationType = message.adaptation_type
         self._log(f'直播间adaptation: {adaptationType}')
 
-
-
-def _patched_parse_gift_msg(self, payload):
-    """Gift message patch for web event emission."""
-    message = GiftMessage().parse(payload)
-    user_name = message.user.nick_name
-    user_id = message.user.id
-    gift_name = message.gift.name or f"Gift {message.gift_id}"
-    gift_cnt = max(
-        int(message.total_count or 0),
-        int(message.combo_count or 0),
-        int(message.repeat_count or 0),
-        int(message.group_count or 0),
-        1,
-    )
-    self._log(f"[gift][{user_id}]{user_name}: {gift_name} x{gift_cnt}")
-    self._emit_event(
-        'gift',
-        live_id=self.live_id,
-        room_id=self.room_id,
-        user_id=str(user_id),
-        user_name=user_name,
-        gift_id=str(message.gift_id),
-        gift_name=gift_name,
-        gift_count=gift_cnt,
-        content=f"\u9001\u51fa {gift_name} x{gift_cnt}",
-    )
-
-
-DouyinLiveWebFetcher._parseGiftMsg = _patched_parse_gift_msg

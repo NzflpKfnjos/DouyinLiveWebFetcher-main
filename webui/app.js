@@ -33,11 +33,6 @@ function formatTime(value) {
   });
 }
 
-function getInitials(name) {
-  const value = (name || "匿名").trim();
-  return Array.from(value).slice(0, 2).join("").toUpperCase();
-}
-
 function getLatestMessage() {
   if (!state.messages.length) {
     return null;
@@ -46,18 +41,10 @@ function getLatestMessage() {
 }
 
 function getMessageTypeLabel(type) {
-  return type === "gift" ? "礼物" : "聊天";
+  return "聊天";
 }
 
 function getMessageContent(item) {
-  if (item.type === "gift") {
-    if (item.content) {
-      return item.content;
-    }
-    const giftName = item.gift_name || "礼物";
-    const giftCount = item.gift_count || 1;
-    return `送出 ${giftName} x${giftCount}`;
-  }
   return item.content || "";
 }
 
@@ -85,7 +72,6 @@ function renderMessages() {
   state.messages.forEach((item) => {
     const node = elements.template.content.firstElementChild.cloneNode(true);
     node.dataset.kind = item.type || "chat";
-    node.querySelector(".message-avatar").textContent = getInitials(item.user_name);
     node.querySelector(".message-user").textContent = item.user_name || "匿名用户";
     node.querySelector(".message-kind").textContent = getMessageTypeLabel(item.type);
     node.querySelector(".message-time").textContent = formatTime(item.iso_time || item.timestamp);
@@ -172,17 +158,15 @@ function startCountdown() {
 }
 
 async function loadInitialData() {
-  const response = await fetch("/api/messages");
-  const messages = await response.json();
+  const messagesResponse = await fetch("/api/messages");
+  const messages = await messagesResponse.json();
   hydrateMessages(messages.items);
 }
 
 function connectEvents() {
   const source = new EventSource("/events");
-  ["chat", "gift"].forEach((eventName) => {
-    source.addEventListener(eventName, (event) => {
-      addMessage(JSON.parse(event.data));
-    });
+  source.addEventListener("chat", (event) => {
+    addMessage(JSON.parse(event.data));
   });
 }
 

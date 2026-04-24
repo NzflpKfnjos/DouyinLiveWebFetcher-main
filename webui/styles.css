@@ -432,6 +432,22 @@ h2 {
   background: rgba(255, 237, 213, 0.88);
 }
 
+.message-card[data-kind="like"] {
+  border-color: rgba(244, 63, 94, 0.18);
+  background: linear-gradient(180deg, rgba(255, 241, 242, 0.92), rgba(255, 255, 255, 0.84));
+}
+
+.message-card[data-kind="like"]:hover {
+  border-color: rgba(244, 63, 94, 0.34);
+  background: linear-gradient(180deg, rgba(255, 228, 230, 0.96), rgba(255, 255, 255, 0.92));
+}
+
+.message-card[data-kind="like"] .message-kind {
+  border-color: rgba(244, 63, 94, 0.18);
+  color: #be123c;
+  background: rgba(255, 228, 230, 0.88);
+}
+
 .empty-state {
   display: grid;
   place-items: center;

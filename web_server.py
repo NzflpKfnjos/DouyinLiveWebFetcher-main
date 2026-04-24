@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 
 from liveMan import DouyinLiveWebFetcher
 
+SELECTABLE_EVENT_TYPES = {"chat", "like"}
+
 
 class LiveMessageWebApp:
     def __init__(self, live_id, host="127.0.0.1", port=8000, history_size=200, cookie=""):
@@ -32,7 +34,7 @@ class LiveMessageWebApp:
         event_type = payload.get("type")
 
         with self.lock:
-            if event_type == "chat":
+            if event_type in SELECTABLE_EVENT_TYPES:
                 self.messages.append(payload)
             subscribers = list(self.subscribers)
 
@@ -170,10 +172,11 @@ class LiveMessageRequestHandler(BaseHTTPRequestHandler):
             while True:
                 try:
                     payload = client_queue.get(timeout=15)
-                    if payload.get("type") != "chat":
+                    event_type = payload.get("type")
+                    if event_type not in SELECTABLE_EVENT_TYPES:
                         continue
                     data = json.dumps(payload, ensure_ascii=False)
-                    chunk = f"event: chat\ndata: {data}\n\n".encode("utf-8")
+                    chunk = f"event: {event_type}\ndata: {data}\n\n".encode("utf-8")
                 except queue.Empty:
                     chunk = b": keepalive\n\n"
 

@@ -41,10 +41,20 @@ function getLatestMessage() {
 }
 
 function getMessageTypeLabel(type) {
-  return "聊天";
+  const labels = {
+    chat: "聊天",
+    like: "点赞",
+  };
+  return labels[type] || "消息";
 }
 
 function getMessageContent(item) {
+  if (item.type === "like") {
+    const count = Number(item.count || 0);
+    const total = Number(item.total || 0);
+    const likeText = count > 0 ? `点了 ${count} 个赞` : "点了赞";
+    return total > 0 ? `${likeText} · 直播间累计 ${total}` : likeText;
+  }
   return item.content || "";
 }
 
@@ -54,7 +64,7 @@ function renderEmptyState() {
   empty.innerHTML = `
     <div>
       <strong>等待直播消息</strong>
-      <p>聊天和礼物事件会实时显示在这里，倒计时结束后会选中最新一条消息的用户。</p>
+      <p>聊天和点赞事件会实时显示在这里，倒计时结束后会选中最新一条消息的用户。</p>
     </div>
   `;
   elements.messageList.appendChild(empty);
@@ -119,7 +129,7 @@ function finishCountdown() {
 
   const userName = latest.user_name || "匿名用户";
   elements.winnerDisplay.textContent = userName;
-  elements.countdownStatus.textContent = `倒计时结束，已选中最新一条消息用户：${userName}`;
+  elements.countdownStatus.textContent = `倒计时结束，已选中最新一条${getMessageTypeLabel(latest.type)}用户：${userName}`;
   elements.drawResult.classList.remove("is-winner");
   void elements.drawResult.offsetWidth;
   elements.drawResult.classList.add("is-winner");
@@ -136,7 +146,7 @@ function startCountdown() {
   elements.countdownDisplay.textContent = String(remaining);
   elements.countdownButton.disabled = true;
   elements.countdownButton.textContent = `倒计时中 ${remaining}s`;
-  elements.countdownStatus.textContent = "倒计时开始，结束后将读取当前最新一条消息的用户。";
+  elements.countdownStatus.textContent = "倒计时开始，结束后将读取当前最新一条聊天或点赞消息的用户。";
   elements.winnerDisplay.classList.add("is-rolling");
 
   state.countdownTimer = window.setInterval(() => {
@@ -166,6 +176,9 @@ async function loadInitialData() {
 function connectEvents() {
   const source = new EventSource("/events");
   source.addEventListener("chat", (event) => {
+    addMessage(JSON.parse(event.data));
+  });
+  source.addEventListener("like", (event) => {
     addMessage(JSON.parse(event.data));
   });
 }

@@ -501,8 +501,19 @@ class DouyinLiveWebFetcher:
         '''点赞消息'''
         message = LikeMessage().parse(payload)
         user_name = message.user.nick_name
+        user_id = message.user.id
         count = message.count
         self._log(f"【点赞msg】{user_name} 点了{count}个赞")
+        self._emit_event(
+            'like',
+            live_id=self.live_id,
+            room_id=self.room_id,
+            user_id=str(user_id),
+            user_name=user_name,
+            count=count,
+            total=message.total,
+            content=f"点了{count}个赞",
+        )
 
     def _parseMemberMsg(self, payload):
         '''进入直播间消息'''

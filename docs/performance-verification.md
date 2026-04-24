@@ -143,12 +143,31 @@ residual risk instead of converting it into a pass. Common examples:
 ## Current pre-integration baseline captured by verification lane
 
 On the worker-3 pre-integration branch, before benchmark and runtime lanes are
-merged, the existing functional regression suite passed:
+merged, the existing functional regression suite passed on a fresh verification
+run:
 
 ```text
-Ran 15 tests in 12.925s
+Ran 15 tests in 11.653s
 OK
 ```
 
+Additional pre-integration sanity checks:
+
+```text
+python3 -m py_compile main.py liveMan.py web_server.py tests/*.py
+# PASS: command exited 0 with no output
+
+python3 main.py --help
+# PASS: argparse help rendered for --live-id, --mode, --host, --port, --cookie
+
+python3 main.py --mode web --live-id smoke-test --host 127.0.0.1 --port 8765
+curl -fsS http://127.0.0.1:8765/
+curl -fsS http://127.0.0.1:8765/app.js
+curl -fsS http://127.0.0.1:8765/api/messages
+# PASS: static assets loaded and /api/messages returned {"items": []}
+```
+
 This is not a performance acceptance result. It is only the current functional
-baseline that later before/after performance evidence must preserve.
+and local web-route baseline that later before/after performance evidence must
+preserve. Live upstream smoke with a real room id/cookie remains required after
+the runtime and benchmark lanes are integrated.

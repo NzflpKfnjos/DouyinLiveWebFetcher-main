@@ -31,12 +31,17 @@ class LiveMessageWebApp:
         self.static_dir = Path(__file__).resolve().parent / "webui"
 
     def publish_event(self, event):
-        payload = dict(event)
-        event_type = payload.get("type")
+        event_type = event.get("type")
+        should_store = event_type in SELECTABLE_EVENT_TYPES
 
         with self.lock:
-            if event_type in SELECTABLE_EVENT_TYPES:
+            if should_store:
+                payload = dict(event)
                 self.messages.append(payload)
+            elif self.subscribers:
+                payload = dict(event)
+            else:
+                return
             subscribers = list(self.subscribers)
 
         stale = []

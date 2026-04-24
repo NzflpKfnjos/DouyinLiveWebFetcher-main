@@ -14,6 +14,7 @@ import random
 import re
 import string
 import subprocess
+import ssl
 import threading
 import time
 import execjs
@@ -127,7 +128,7 @@ class DouyinLiveWebFetcher:
 
     
     def __init__(self, live_id, abogus_file='a_bogus.js', event_handler: Optional[Callable[[dict], None]] = None,
-                 verbose=True, cookie: str = ''):
+                 verbose=True, cookie: str = '', transport: str = 'websocket'):
         """
         直播间弹幕抓取对象
         :param live_id: 直播间的直播id，打开直播间web首页的链接如：https://live.douyin.com/261378947940，
@@ -135,6 +136,7 @@ class DouyinLiveWebFetcher:
         """
         self.abogus_file = abogus_file
         self.cookie = (cookie or '').strip()
+        self.transport = transport
         self.__ttwid = None
         self.__room_id = None
         self.session = requests.Session()
@@ -166,11 +168,14 @@ class DouyinLiveWebFetcher:
         self._stop_event.clear()
         while not self._stop_event.is_set():
             try:
-                self._connectFetchLoop()
+                if self.transport == 'fetch':
+                    self._connectFetchLoop()
+                else:
+                    self._connectWebSocket()
             except Exception as err:
                 if self._stop_event.is_set():
                     break
-                self._log("WebSocket reconnect error:", err)
+                self._log("Live message loop reconnect error:", err)
                 self._emit_event(
                     'connection',
                     status='error',
@@ -1030,7 +1035,7 @@ class DouyinLiveWebFetcher:
                                          on_error=self._wsOnError,
                                          on_close=self._wsOnClose)
         try:
-            self.ws.run_forever()
+            self.ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
         except Exception:
             self.stop()
             raise

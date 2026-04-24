@@ -20,7 +20,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -223,7 +223,7 @@ def compare_results(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
     before_wall = float(before["median_wall_seconds"])
     after_wall = float(after["median_wall_seconds"])
 
-    def pct_delta(old: float, new: float) -> float | None:
+    def pct_delta(old: float, new: float) -> Optional[float]:
         if old == 0:
             return None
         return round(((new - old) / old) * 100, 2)
@@ -280,7 +280,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     if args.runs < 1 or args.messages < 1 or args.top < 1:
         raise SystemExit("--runs, --messages, and --top must all be >= 1")

@@ -43,12 +43,19 @@ function getLatestMessage() {
 function getMessageTypeLabel(type) {
   const labels = {
     chat: "聊天",
+    gift: "礼物",
     like: "点赞",
   };
   return labels[type] || "消息";
 }
 
 function getMessageContent(item) {
+  if (item.type === "gift") {
+    const parsedName = String(item.content || "").match(/送(?:出(?:了)?|了)?\s*([^xX×*\s，。,.!！]+)/);
+    const giftName = item.gift_name || (parsedName ? parsedName[1] : "礼物");
+    const giftCount = Number(item.gift_count || item.combo_count || item.repeat_count || 1);
+    return `送出了 ${giftName} x${giftCount}`;
+  }
   if (item.type === "like") {
     const count = Number(item.count || 0);
     const total = Number(item.total || 0);
@@ -146,7 +153,7 @@ function startCountdown() {
   elements.countdownDisplay.textContent = String(remaining);
   elements.countdownButton.disabled = true;
   elements.countdownButton.textContent = `倒计时中 ${remaining}s`;
-  elements.countdownStatus.textContent = "倒计时开始，结束后将读取当前最新一条聊天或点赞消息的用户。";
+  elements.countdownStatus.textContent = "倒计时开始，结束后将读取当前最新一条聊天、礼物或点赞消息的用户。";
   elements.winnerDisplay.classList.add("is-rolling");
 
   state.countdownTimer = window.setInterval(() => {
@@ -175,7 +182,19 @@ async function loadInitialData() {
 
 function connectEvents() {
   const source = new EventSource("/events");
+  source.addEventListener("packet", (event) => {
+    console.debug("直播消息包", JSON.parse(event.data));
+  });
+  source.addEventListener("unknown_message", (event) => {
+    console.debug("未识别直播消息", JSON.parse(event.data));
+  });
+  source.addEventListener("parse_error", (event) => {
+    console.warn("直播消息解析失败", JSON.parse(event.data));
+  });
   source.addEventListener("chat", (event) => {
+    addMessage(JSON.parse(event.data));
+  });
+  source.addEventListener("gift", (event) => {
     addMessage(JSON.parse(event.data));
   });
   source.addEventListener("like", (event) => {

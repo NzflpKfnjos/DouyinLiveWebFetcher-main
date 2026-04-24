@@ -14,7 +14,7 @@ from liveMan import DouyinLiveWebFetcher
 from web_server import LiveMessageWebApp
 
 
-DEFAULT_LIVE_ID = '67824383638'
+DEFAULT_LIVE_ID = '146551446786'
 ENV_FILE = Path(__file__).resolve().parent / '.env'
 
 

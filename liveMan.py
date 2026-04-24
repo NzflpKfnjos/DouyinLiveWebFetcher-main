@@ -9,6 +9,7 @@
 import codecs
 import gzip
 import hashlib
+import json
 import random
 import re
 import string
@@ -107,6 +108,23 @@ def generateMsToken(length=182):
 
 
 class DouyinLiveWebFetcher:
+    MESSAGE_PARSER_NAMES = {
+        'WebcastChatMessage': '_parseChatMsg',  # 聊天消息
+        'WebcastGiftMessage': '_parseGiftMsg',  # 礼物消息
+        'WebcastLikeMessage': '_parseLikeMsg',  # 点赞消息
+        'WebcastMemberMessage': '_parseMemberMsg',  # 进入直播间消息
+        'WebcastSocialMessage': '_parseSocialMsg',  # 关注消息
+        'WebcastRoomUserSeqMessage': '_parseRoomUserSeqMsg',  # 直播间统计
+        'WebcastFansclubMessage': '_parseFansclubMsg',  # 粉丝团消息
+        'WebcastControlMessage': '_parseControlMsg',  # 直播间状态消息
+        'WebcastEmojiChatMessage': '_parseEmojiChatMsg',  # 聊天表情包消息
+        'WebcastInRoomBannerMessage': '_parseInRoomBannerMsg',  # 直播间横幅消息
+        'WebcastRoomStatsMessage': '_parseRoomStatsMsg',  # 直播间统计信息
+        'WebcastRoomMessage': '_parseRoomMsg',  # 直播间信息
+        'WebcastRoomRankMessage': '_parseRankMsg',  # 直播间排行榜信息
+        'WebcastRoomStreamAdaptationMessage': '_parseRoomStreamAdaptationMsg',  # 直播间流配置
+    }
+
     
     def __init__(self, live_id, abogus_file='a_bogus.js', event_handler: Optional[Callable[[dict], None]] = None,
                  verbose=True, cookie: str = ''):
@@ -126,6 +144,10 @@ class DouyinLiveWebFetcher:
         self.host = "https://www.douyin.com/"
         self.live_url = "https://live.douyin.com/"
         self.ws = None
+        self._stop_event = threading.Event()
+        self._heartbeat_thread = None
+        self._heartbeat_interval_seconds = 10.0
+        self._reconnect_delay_seconds = 2.0
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
         self.headers = {
             'User-Agent': self.user_agent
@@ -135,11 +157,41 @@ class DouyinLiveWebFetcher:
             self.session.headers.update({'Cookie': self.cookie})
     
     def start(self):
-        self._connectWebSocket()
+        self._stop_event.clear()
+        while not self._stop_event.is_set():
+            try:
+                self._connectFetchLoop()
+            except Exception as err:
+                if self._stop_event.is_set():
+                    break
+                self._log("WebSocket reconnect error:", err)
+                self._emit_event(
+                    'connection',
+                    status='error',
+                    message=str(err),
+                    live_id=self.live_id,
+                    room_id=self.room_id,
+                )
+
+            if self._stop_event.is_set():
+                break
+
+            self._emit_event(
+                'connection',
+                status='reconnecting',
+                message=f'{self._reconnect_delay_seconds:.0f}s',
+                live_id=self.live_id,
+                room_id=self.room_id,
+            )
+            time.sleep(self._reconnect_delay_seconds)
     
     def stop(self):
+        self._stop_event.set()
         if self.ws is not None:
-            self.ws.close()
+            try:
+                self.ws.close()
+            except Exception:
+                pass
 
     def _log(self, *args):
         if self.verbose:
@@ -161,6 +213,462 @@ class DouyinLiveWebFetcher:
             self.event_handler(event)
         except Exception as err:
             self._log("Event handler error:", err)
+
+    @staticmethod
+    def _first_positive_value(*values, default=0):
+        for value in values:
+            if value:
+                return value
+        return default
+
+    @staticmethod
+    def _image_urls(image):
+        if image is None:
+            return []
+        return list(getattr(image, 'url_list_list', []) or [])
+
+    def _first_image_urls(self, *images):
+        for image in images:
+            urls = self._image_urls(image)
+            if urls:
+                return urls
+        return []
+
+    @staticmethod
+    def _is_gift_method(method):
+        method = method or ''
+        method_lower = method.lower()
+        if any(word in method_lower for word in ('vote', 'sort', 'rank', 'guide')):
+            return False
+        return method_lower.startswith('webcastgift') and 'message' in method_lower
+
+    @staticmethod
+    def _is_probable_gift_text(text):
+        if not text:
+            return False
+        gift_words = ('送出', '送了', '礼物', 'gift', 'diamond', '钻石', '抖币')
+        excluded_words = ('礼物展馆', '礼物面板', 'gift_panel', 'giftpanel', 'gift_sort', 'gift_vote')
+        text_lower = str(text).lower()
+        return any(word in text_lower for word in gift_words) and not any(word in text_lower for word in excluded_words)
+
+    @staticmethod
+    def _short_text(value):
+        if isinstance(value, list):
+            return ''.join(str(item) for item in value if item is not None)
+        if value is None:
+            return ''
+        return str(value)
+
+    def _remember_gift_event(self, signature, ttl_seconds=30):
+        now = time.time()
+        if not hasattr(self, '_recent_gift_events'):
+            self._recent_gift_events = {}
+        self._recent_gift_events = {
+            key: created_at for key, created_at in self._recent_gift_events.items()
+            if now - created_at < ttl_seconds
+        }
+        if signature in self._recent_gift_events:
+            return False
+        self._recent_gift_events[signature] = now
+        return True
+
+    @staticmethod
+    def _decode_proto_string(value):
+        if not isinstance(value, (bytes, bytearray)):
+            return ''
+        try:
+            text = bytes(value).decode('utf-8')
+        except UnicodeDecodeError:
+            return ''
+
+        text = text.strip()
+        if not text or '\x00' in text:
+            return ''
+        printable_count = sum(1 for char in text if char.isprintable())
+        if printable_count / len(text) < 0.8:
+            return ''
+        return text
+
+    @staticmethod
+    def _read_proto_varint(payload, position):
+        result = 0
+        shift = 0
+        while position < len(payload):
+            byte = payload[position]
+            position += 1
+            result |= (byte & 0x7F) << shift
+            if byte < 0x80:
+                return result, position
+            shift += 7
+            if shift >= 64:
+                break
+        raise ValueError('Invalid protobuf varint')
+
+    @classmethod
+    def _iter_proto_fields(cls, payload):
+        position = 0
+        payload_length = len(payload or b'')
+        while position < payload_length:
+            try:
+                key, position = cls._read_proto_varint(payload, position)
+            except ValueError:
+                break
+
+            field_number = key >> 3
+            wire_type = key & 0x07
+            if field_number <= 0:
+                break
+
+            try:
+                if wire_type == 0:
+                    value, position = cls._read_proto_varint(payload, position)
+                elif wire_type == 1:
+                    end_position = position + 8
+                    if end_position > payload_length:
+                        break
+                    value = payload[position:end_position]
+                    position = end_position
+                elif wire_type == 2:
+                    size, position = cls._read_proto_varint(payload, position)
+                    end_position = position + size
+                    if end_position > payload_length:
+                        break
+                    value = payload[position:end_position]
+                    position = end_position
+                elif wire_type == 5:
+                    end_position = position + 4
+                    if end_position > payload_length:
+                        break
+                    value = payload[position:end_position]
+                    position = end_position
+                else:
+                    break
+            except ValueError:
+                break
+
+            yield field_number, wire_type, value
+
+    @classmethod
+    def _proto_field_map(cls, payload):
+        fields = {}
+        for field_number, wire_type, value in cls._iter_proto_fields(payload):
+            fields.setdefault(field_number, []).append((wire_type, value))
+        return fields
+
+    @staticmethod
+    def _first_varint_field(fields, *field_numbers, default=0):
+        for field_number in field_numbers:
+            for wire_type, value in fields.get(field_number, []):
+                if wire_type == 0 and value:
+                    return value
+        return default
+
+    @staticmethod
+    def _message_fields(fields, field_number):
+        return [value for wire_type, value in fields.get(field_number, []) if wire_type == 2]
+
+    def _first_message_field(self, fields, *field_numbers):
+        for field_number in field_numbers:
+            messages = self._message_fields(fields, field_number)
+            if messages:
+                return messages[0]
+        return b''
+
+    def _string_fields(self, fields, field_number):
+        strings = []
+        for wire_type, value in fields.get(field_number, []):
+            if wire_type == 2:
+                text = self._decode_proto_string(value)
+                if text:
+                    strings.append(text)
+        return strings
+
+    def _first_string_field(self, fields, *field_numbers):
+        for field_number in field_numbers:
+            strings = self._string_fields(fields, field_number)
+            if strings:
+                return strings[0]
+        return ''
+
+    def _raw_user_info(self, payload):
+        fields = self._proto_field_map(payload)
+        user_id = self._first_varint_field(fields, 1)
+        user_id = user_id or self._first_string_field(fields, 1028)
+        user_name = self._first_string_field(fields, 3, 38)
+        return user_id, user_name
+
+    def _find_user_payload(self, fields):
+        explicit_payload = self._first_message_field(fields, 7)
+        if explicit_payload:
+            return explicit_payload
+
+        for field_number, values in fields.items():
+            if field_number in {1, 15, 19}:
+                continue
+            for wire_type, value in values:
+                if wire_type != 2:
+                    continue
+                candidate_fields = self._proto_field_map(value)
+                if self._first_varint_field(candidate_fields, 1) and self._first_string_field(candidate_fields, 3):
+                    return value
+        return b''
+
+    def _raw_image_urls(self, payload):
+        fields = self._proto_field_map(payload)
+        return [url for url in self._string_fields(fields, 1) if url.startswith(('http://', 'https://'))]
+
+    def _raw_gift_info(self, payload):
+        fields = self._proto_field_map(payload)
+        image_urls = []
+        for image_field_number in (1, 15, 21):
+            for image_payload in self._message_fields(fields, image_field_number):
+                image_urls = self._raw_image_urls(image_payload)
+                if image_urls:
+                    break
+            if image_urls:
+                break
+
+        return {
+            'gift_id': self._first_varint_field(fields, 5),
+            'gift_name': self._first_string_field(fields, 16, 2),
+            'diamond_count': self._first_varint_field(fields, 12),
+            'gift_image': image_urls,
+        }
+
+    def _find_gift_payload(self, fields):
+        explicit_payload = self._first_message_field(fields, 15)
+        if explicit_payload:
+            return explicit_payload
+
+        for values in fields.values():
+            for wire_type, value in values:
+                if wire_type != 2:
+                    continue
+                candidate_fields = self._proto_field_map(value)
+                gift_name = self._first_string_field(candidate_fields, 16, 2)
+                gift_id = self._first_varint_field(candidate_fields, 5)
+                diamond_count = self._first_varint_field(candidate_fields, 12)
+                if gift_name and (gift_id or diamond_count):
+                    return value
+        return b''
+
+    def _raw_text_to_plain(self, payload):
+        fields = self._proto_field_map(payload)
+        pieces = []
+        for piece_payload in self._message_fields(fields, 4):
+            piece_fields = self._proto_field_map(piece_payload)
+            piece_text = self._first_string_field(piece_fields, 3)
+            if not piece_text:
+                user_value_payload = self._first_message_field(piece_fields, 4)
+                user_payload = self._first_message_field(self._proto_field_map(user_value_payload), 1)
+                if user_payload:
+                    _, piece_text = self._raw_user_info(user_payload)
+            if not piece_text:
+                gift_payload = self._first_message_field(piece_fields, 5)
+                if gift_payload:
+                    gift_fields = self._proto_field_map(gift_payload)
+                    name_ref_payload = self._first_message_field(gift_fields, 2)
+                    name_ref_fields = self._proto_field_map(name_ref_payload)
+                    piece_text = self._first_string_field(name_ref_fields, 2, 1)
+            if not piece_text:
+                pattern_payload = self._first_message_field(piece_fields, 7)
+                pattern_fields = self._proto_field_map(pattern_payload)
+                piece_text = self._first_string_field(pattern_fields, 2, 1)
+            if piece_text:
+                pieces.append(piece_text)
+        return ''.join(pieces) or self._first_string_field(fields, 2)
+
+    def _extract_gift_user_from_text(self, text):
+        text = str(text or '').strip()
+        patterns = (
+            r'^(.+?)\s*(?:送出(?:了)?|送了|赠送)\s*[「“\"]?([^「」“”\"\s，。,.!！xX×*]+)',
+            r'^(.+?)\s*(?:给主播|给TA|给ta)\s*送(?:出(?:了)?|了)?\s*[「“\"]?([^「」“”\"\s，。,.!！xX×*]+)',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            user_name = match.group(1).strip(' ：:，,')
+            gift_name = self._clean_gift_name(match.group(2))
+            if user_name and gift_name:
+                return user_name, gift_name
+        return '', ''
+
+    def _decode_raw_gift_payload(self, payload):
+        fields = self._proto_field_map(payload)
+        user_id, user_name = self._raw_user_info(self._find_user_payload(fields))
+        gift_info = self._raw_gift_info(self._find_gift_payload(fields))
+        tray_text = self._raw_text_to_plain(self._first_message_field(fields, 19))
+        text_user_name, text_gift_name = self._extract_gift_user_from_text(tray_text)
+        gift_id = self._first_varint_field(fields, 2) or gift_info.get('gift_id')
+        gift_count = self._first_varint_field(fields, 6, 5, 29, 4, default=1)
+        return {
+            'user_id': user_id,
+            'user_name': user_name or text_user_name,
+            'gift_id': gift_id,
+            'gift_name': gift_info.get('gift_name') or text_gift_name or '',
+            'gift_count': gift_count,
+            'repeat_count': self._first_varint_field(fields, 5),
+            'combo_count': self._first_varint_field(fields, 6),
+            'total_count': self._first_varint_field(fields, 29),
+            'group_count': self._first_varint_field(fields, 4),
+            'diamond_count': gift_info.get('diamond_count') or 0,
+            'gift_image': gift_info.get('gift_image') or [],
+            'tray_text': tray_text,
+        }
+
+    def _iter_json_objects(self, value):
+        if isinstance(value, dict):
+            yield value
+            for child in value.values():
+                yield from self._iter_json_objects(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from self._iter_json_objects(child)
+
+    def _iter_json_strings(self, value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for child in value.values():
+                yield from self._iter_json_strings(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from self._iter_json_strings(child)
+
+    def _first_json_value(self, value, names):
+        if isinstance(value, dict):
+            for name in names:
+                if name in value and value[name] not in (None, ''):
+                    return value[name]
+            for child in value.values():
+                result = self._first_json_value(child, names)
+                if result not in (None, ''):
+                    return result
+        elif isinstance(value, list):
+            for child in value:
+                result = self._first_json_value(child, names)
+                if result not in (None, ''):
+                    return result
+        return ''
+
+    @staticmethod
+    def _clean_gift_name(value):
+        text = str(value or '').strip()
+        text = re.sub(r'^(礼物|赠礼|送礼)[:：\s]*', '', text)
+        text = re.sub(r'\s*[xX×*]\s*\d+.*$', '', text)
+        text = re.sub(r'[，。,.!！]+$', '', text)
+        return text.strip()
+
+    def _extract_gift_name_from_text(self, text):
+        text = str(text or '').strip()
+        patterns = (
+            r'送(?:出(?:了)?|了|给主播|给TA|给ta)?\s*[「“\"]?([^「」“”\"\s，。,.!！xX×*]+)',
+            r'赠送\s*[「“\"]?([^「」“”\"\s，。,.!！xX×*]+)',
+            r'礼物[:：\s]+([^\s，。,.!！xX×*]+)',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                gift_name = self._clean_gift_name(match.group(1))
+                if gift_name and gift_name not in {'了', '出', '送'}:
+                    return gift_name
+        return ''
+
+    @staticmethod
+    def _extract_gift_count_from_text(text):
+        match = re.search(r'[xX×*]\s*(\d+)', str(text or ''))
+        if match:
+            return int(match.group(1))
+        return 0
+
+    def _extract_banner_json_texts(self, payload):
+        texts = []
+        for _, wire_type, value in self._iter_proto_fields(payload):
+            if wire_type != 2:
+                continue
+            text = self._decode_proto_string(value)
+            if text and text.lstrip().startswith(('{', '[')):
+                texts.append(text)
+            elif value:
+                texts.extend(self._extract_banner_json_texts(value))
+        return texts
+
+    def _extract_banner_gift_events(self, value):
+        events = []
+        for item in self._iter_json_objects(value):
+            combined_text = ' '.join(self._short_text(text) for text in self._iter_json_strings(item))
+            if not self._is_probable_gift_text(combined_text):
+                continue
+
+            props = item.get('basic_props') if isinstance(item.get('basic_props'), dict) else {}
+            title = self._short_text(props.get('title') or item.get('title') or item.get('nick_name') or item.get('nickname'))
+            desc = self._short_text(props.get('desc') or item.get('desc') or item.get('description') or item.get('content'))
+            icon_src = props.get('icon_src') or item.get('icon') or item.get('image') or item.get('avatar') or []
+            image_urls = icon_src if isinstance(icon_src, list) else [icon_src] if icon_src else []
+
+            user_name = self._short_text(
+                item.get('user_name') or item.get('userName') or item.get('nickname') or item.get('nick_name')
+                or self._first_json_value(item, ('user_name', 'userName', 'nickname', 'nick_name'))
+            )
+            gift_name = self._short_text(
+                item.get('gift_name') or item.get('giftName') or item.get('name') or item.get('gift_desc')
+                or self._first_json_value(item, ('gift_name', 'giftName', 'gift_desc', 'giftDesc', 'gift_title'))
+            )
+            count = self._first_positive_value(
+                item.get('gift_count'), item.get('giftCount'), item.get('count'), item.get('repeat_count'),
+                self._first_json_value(item, ('gift_count', 'giftCount', 'repeat_count', 'repeatCount')),
+                default=0
+            )
+
+            content = desc or title or combined_text
+            if not gift_name:
+                gift_name = self._extract_gift_name_from_text(content) or self._extract_gift_name_from_text(combined_text)
+            gift_name = self._clean_gift_name(gift_name)
+            count = self._first_positive_value(count, self._extract_gift_count_from_text(content), default=1)
+
+            events.append({
+                'user_id': str(item.get('user_id') or item.get('userId') or ''),
+                'user_name': user_name or title or '匿名用户',
+                'gift_id': str(item.get('gift_id') or item.get('giftId') or ''),
+                'gift_name': gift_name or '礼物',
+                'gift_count': count,
+                'gift_image': [url for url in image_urls if isinstance(url, str) and url.startswith(('http://', 'https://'))],
+                'content': content,
+            })
+        return events
+
+    def _text_to_plain(self, text):
+        if text is None:
+            return ''
+
+        pieces = []
+        for piece in getattr(text, 'pieces_list', []) or []:
+            string_value = getattr(piece, 'string_value', '')
+            if string_value:
+                pieces.append(string_value)
+                continue
+
+            user_value = getattr(piece, 'user_value', None)
+            user = getattr(user_value, 'user', None) if user_value else None
+            nick_name = getattr(user, 'nick_name', '') if user else ''
+            if nick_name:
+                pieces.append(nick_name)
+                continue
+
+            gift_value = getattr(piece, 'gift_value', None)
+            name_ref = getattr(gift_value, 'name_ref', None) if gift_value else None
+            gift_name = getattr(name_ref, 'default_pattern', '') if name_ref else ''
+            if gift_name:
+                pieces.append(gift_name)
+                continue
+
+            pattern_ref_value = getattr(piece, 'pattern_ref_value', None)
+            pattern_text = getattr(pattern_ref_value, 'default_pattern', '') if pattern_ref_value else ''
+            if pattern_text:
+                pieces.append(pattern_text)
+
+        return ''.join(pieces) or getattr(text, 'default_patter', '') or ''
 
     @staticmethod
     def _parse_cookie_string(cookie: str) -> dict:
@@ -316,8 +824,14 @@ class DouyinLiveWebFetcher:
                 'msToken': msToken,
             }),
         })
-        resp = self.session.get(url, headers=headers)
-        data = resp.json().get('data')
+        try:
+            resp = self.session.get(url, headers=headers, timeout=10)
+            payload = resp.json()
+        except Exception as err:
+            self._log("【X】Get room status error:", err)
+            return None
+
+        data = payload.get('data') if isinstance(payload, dict) else None
         if data:
             room_status = data.get('room_status')
             user = data.get('user')
@@ -334,6 +848,8 @@ class DouyinLiveWebFetcher:
                 room_id=self.room_id,
                 live_id=self.live_id,
             )
+            return room_status
+        return None
     
     def _connectWebSocket(self):
         """
@@ -348,9 +864,9 @@ class DouyinLiveWebFetcher:
             f"|first_req_ms:{now_ms}|fetch_time:{now_ms}|seq:1|wss_info:0-{now_ms}-0-0|"
             f"wrds_v:{wrds_v}"
         )
-        wss = ("wss://webcast100-ws-web-lq.douyin.com/webcast/im/push/v2/?app_name=douyin_web"
-               "&version_code=180800&webcast_sdk_version=1.0.14-beta.0"
-               "&update_version_code=1.0.14-beta.0&compress=gzip&device_platform=web&cookie_enabled=true"
+        wss = ("wss://webcast100-ws-web-hl.douyin.com/webcast/im/push/v2/?app_name=douyin_web"
+               "&version_code=180800&webcast_sdk_version=1.0.15"
+               "&update_version_code=1.0.15&compress=gzip&device_platform=web&cookie_enabled=true"
                "&screen_width=1536&screen_height=864&browser_language=zh-CN&browser_platform=Win32"
                "&browser_name=Mozilla"
                "&browser_version=5.0%20(Windows%20NT%2010.0;%20Win64;%20x64)%20AppleWebKit/537.36%20(KHTML,"
@@ -384,21 +900,159 @@ class DouyinLiveWebFetcher:
         except Exception:
             self.stop()
             raise
+
+    def _dispatch_response(self, response, package_log_id=0, ws=None):
+        if response.heartbeat_duration:
+            self._heartbeat_interval_seconds = max(5.0, response.heartbeat_duration / 1000)
+
+        methods = [msg.method for msg in response.messages_list]
+        self._emit_event(
+            'packet',
+            live_id=self.live_id,
+            room_id=self.room_id,
+            message_count=len(response.messages_list),
+            methods=methods,
+            heartbeat_duration=response.heartbeat_duration,
+        )
+
+        if ws is not None and response.need_ack:
+            ack = PushFrame(
+                log_id=package_log_id,
+                payload_type='ack',
+                payload=response.internal_ext.encode('utf-8'),
+            ).SerializeToString()
+            ws.send(ack, websocket.ABNF.OPCODE_BINARY)
+
+        for msg in response.messages_list:
+            method = msg.method
+            try:
+                parser_name = self.MESSAGE_PARSER_NAMES.get(method)
+                if parser_name is not None:
+                    getattr(self, parser_name)(msg.payload)
+                elif self._is_gift_method(method):
+                    self._parseGiftMsg(msg.payload, method=method)
+                else:
+                    self._log(f"【未识别msg】{method} ({len(msg.payload or b'')} bytes)")
+                    self._emit_event(
+                        'unknown_message',
+                        live_id=self.live_id,
+                        room_id=self.room_id,
+                        method=method,
+                        payload_size=len(msg.payload or b''),
+                    )
+            except Exception as err:
+                self._emit_event(
+                    'parse_error',
+                    live_id=self.live_id,
+                    room_id=self.room_id,
+                    method=method,
+                    message=str(err),
+                )
+
+    def _build_fetch_params(self, cursor='', internal_ext='', ms_token=''):
+        return {
+            'resp_content_type': 'protobuf',
+            'did_rule': '3',
+            'device_id': '',
+            'app_name': 'douyin_web',
+            'endpoint': 'live_pc',
+            'support_wrds': '1',
+            'user_unique_id': self._get_webcast_did(),
+            'identity': 'audience',
+            'need_persist_msg_count': '15',
+            'insert_task_id': '',
+            'live_reason': '',
+            'room_id': self.room_id,
+            'version_code': '180800',
+            'live_id': '1',
+            'aid': '6383',
+            'fetch_rule': '1',
+            'cursor': cursor,
+            'internal_ext': internal_ext,
+            'device_platform': 'web',
+            'cookie_enabled': 'true',
+            'screen_width': '1536',
+            'screen_height': '864',
+            'browser_language': 'zh-CN',
+            'browser_platform': 'Win32',
+            'browser_name': 'Mozilla',
+            'browser_version': '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+            'browser_online': 'true',
+            'tz_name': 'Asia/Shanghai',
+            'msToken': ms_token,
+        }
+
+    def _build_fetch_headers(self, ms_token=''):
+        headers = self.headers.copy()
+        headers.update({
+            'Accept': 'application/x-protobuf, application/octet-stream, */*',
+            'Referer': f'https://live.douyin.com/{self.live_id}',
+            'Cookie': self._build_cookie_header({
+                'ttwid': self.ttwid,
+                'msToken': ms_token,
+            }),
+        })
+        return headers
+
+    def _fetch_message_response(self, cursor='', internal_ext=''):
+        ms_token = self._get_cookie_value('msToken') or generateMsToken()
+        params = self._build_fetch_params(cursor=cursor, internal_ext=internal_ext, ms_token=ms_token)
+        params['a_bogus'] = self.get_a_bogus(params)
+        response = self.session.get(
+            'https://live.douyin.com/webcast/im/fetch/',
+            params=params,
+            headers=self._build_fetch_headers(ms_token=ms_token),
+            timeout=20,
+        )
+        response.raise_for_status()
+        return Response().parse(response.content)
+
+    def _connectFetchLoop(self):
+        cursor = ''
+        internal_ext = ''
+        opened = False
+        while not self._stop_event.is_set():
+            response = self._fetch_message_response(cursor=cursor, internal_ext=internal_ext)
+            if not opened:
+                opened = True
+                self._emit_event(
+                    'connection',
+                    status='open',
+                    live_id=self.live_id,
+                    room_id=self.room_id,
+                )
+
+            self._dispatch_response(response)
+            cursor = response.cursor or cursor
+            internal_ext = response.internal_ext or internal_ext
+
+            sleep_seconds = max(0.5, (response.fetch_interval or 1000) / 1000)
+            time.sleep(sleep_seconds)
+        if opened:
+            self._emit_event(
+                'connection',
+                status='stopped' if self._stop_event.is_set() else 'closed',
+                live_id=self.live_id,
+                room_id=self.room_id,
+            )
     
     def _sendHeartbeat(self):
         """
         发送心跳包
         """
-        while True:
+        ws = self.ws
+        while not self._stop_event.is_set() and self.ws is ws:
             try:
+                if ws is None or ws.sock is None or not ws.sock.connected:
+                    break
                 heartbeat = PushFrame(payload_type='hb').SerializeToString()
-                self.ws.send(heartbeat, websocket.ABNF.OPCODE_PING)
+                ws.send(heartbeat, websocket.ABNF.OPCODE_BINARY)
                 self._log("【√】发送心跳包")
             except Exception as e:
                 self._log("【X】心跳包检测错误: ", e)
                 break
             else:
-                time.sleep(5)
+                time.sleep(max(5.0, self._heartbeat_interval_seconds))
     
     def _wsOnOpen(self, ws):
         """
@@ -406,7 +1060,8 @@ class DouyinLiveWebFetcher:
         """
         self._log("【√】WebSocket连接成功.")
         self._emit_event('connection', status='open', live_id=self.live_id, room_id=self.room_id)
-        threading.Thread(target=self._sendHeartbeat, daemon=True).start()
+        self._heartbeat_thread = threading.Thread(target=self._sendHeartbeat, daemon=True)
+        self._heartbeat_thread.start()
     
     def _wsOnMessage(self, ws, message):
         """
@@ -418,60 +1073,29 @@ class DouyinLiveWebFetcher:
         # 根据proto结构体解析对象
         package = PushFrame().parse(message)
         response = Response().parse(gzip.decompress(package.payload))
-        methods = [msg.method for msg in response.messages_list]
-        self._emit_event(
-            'packet',
-            live_id=self.live_id,
-            room_id=self.room_id,
-            message_count=len(response.messages_list),
-            methods=methods,
-        )
-        
-        # 返回直播间服务器链接存活确认消息，便于持续获取数据
-        if response.need_ack:
-            ack = PushFrame(log_id=package.log_id,
-                            payload_type='ack',
-                            payload=response.internal_ext.encode('utf-8')
-                            ).SerializeToString()
-            ws.send(ack, websocket.ABNF.OPCODE_BINARY)
-        
-        # 根据消息类别解析消息体
-        for msg in response.messages_list:
-            method = msg.method
-            try:
-                parser = {
-                    'WebcastChatMessage': self._parseChatMsg,  # 聊天消息
-                    'WebcastLikeMessage': self._parseLikeMsg,  # 点赞消息
-                    'WebcastMemberMessage': self._parseMemberMsg,  # 进入直播间消息
-                    'WebcastSocialMessage': self._parseSocialMsg,  # 关注消息
-                    'WebcastRoomUserSeqMessage': self._parseRoomUserSeqMsg,  # 直播间统计
-                    'WebcastFansclubMessage': self._parseFansclubMsg,  # 粉丝团消息
-                    'WebcastControlMessage': self._parseControlMsg,  # 直播间状态消息
-                    'WebcastEmojiChatMessage': self._parseEmojiChatMsg,  # 聊天表情包消息
-                    'WebcastRoomStatsMessage': self._parseRoomStatsMsg,  # 直播间统计信息
-                    'WebcastRoomMessage': self._parseRoomMsg,  # 直播间信息
-                    'WebcastRoomRankMessage': self._parseRankMsg,  # 直播间排行榜信息
-                    'WebcastRoomStreamAdaptationMessage': self._parseRoomStreamAdaptationMsg,  # 直播间流配置
-                }.get(method)
-                if parser is not None:
-                    parser(msg.payload)
-            except Exception as err:
-                self._emit_event(
-                    'parse_error',
-                    live_id=self.live_id,
-                    room_id=self.room_id,
-                    method=method,
-                    message=str(err),
-                )
+        self._dispatch_response(response, package_log_id=package.log_id, ws=ws)
     
     def _wsOnError(self, ws, error):
         self._log("WebSocket error: ", error)
+        if self._stop_event.is_set():
+            return
         self._emit_event('connection', status='error', message=str(error), live_id=self.live_id, room_id=self.room_id)
     
     def _wsOnClose(self, ws, *args):
-        self.get_room_status()
         self._log("WebSocket connection closed.")
-        self._emit_event('connection', status='closed', live_id=self.live_id, room_id=self.room_id)
+        self.ws = None
+        self._heartbeat_thread = None
+        if self._stop_event.is_set():
+            status = 'stopped'
+        else:
+            status = 'closed'
+        self._emit_event(
+            'connection',
+            status=status,
+            message=str(args) if args else '',
+            live_id=self.live_id,
+            room_id=self.room_id,
+        )
     
     def _parseChatMsg(self, payload):
         """聊天消息"""
@@ -489,13 +1113,91 @@ class DouyinLiveWebFetcher:
             content=content,
         )
     
-    def _parseGiftMsg(self, payload):
+    def _parseGiftMsg(self, payload, method='WebcastGiftMessage'):
         """礼物消息"""
         message = GiftMessage().parse(payload)
-        user_name = message.user.nick_name
-        gift_name = message.gift.name
-        gift_cnt = message.combo_count
+        raw_message = self._decode_raw_gift_payload(payload)
+        user = message.user
+        gift = message.gift
+        tray_text = self._text_to_plain(message.tray_display_text) or raw_message.get('tray_text') or ''
+        _, text_gift_name = self._extract_gift_user_from_text(tray_text)
+        user_name = user.nick_name or raw_message.get('user_name') or '匿名用户'
+        user_id = user.id or raw_message.get('user_id') or ''
+        gift_id = message.gift_id or gift.id or raw_message.get('gift_id') or 0
+        gift_name = (gift.name or gift.describe or raw_message.get('gift_name')
+                     or text_gift_name or self._extract_gift_name_from_text(tray_text) or f"礼物{gift_id}")
+        gift_cnt = self._first_positive_value(message.combo_count, message.repeat_count, message.total_count,
+                                              message.group_count, raw_message.get('gift_count'), default=1)
+        signature = (method, str(user_id), str(gift_id), gift_name, str(gift_cnt), str(message.trace_id or message.log_id))
+        if not self._remember_gift_event(signature):
+            return
         self._log(f"【礼物msg】{user_name} 送出了 {gift_name}x{gift_cnt}")
+        self._emit_event(
+            'gift',
+            live_id=self.live_id,
+            room_id=self.room_id,
+            method=method,
+            user_id=str(user_id),
+            user_name=user_name,
+            gift_id=str(gift_id),
+            gift_name=gift_name,
+            gift_count=gift_cnt,
+            repeat_count=message.repeat_count or raw_message.get('repeat_count'),
+            combo_count=message.combo_count or raw_message.get('combo_count'),
+            total_count=message.total_count or raw_message.get('total_count'),
+            group_count=message.group_count or raw_message.get('group_count'),
+            diamond_count=gift.diamond_count or raw_message.get('diamond_count'),
+            gift_image=self._first_image_urls(gift.image, gift.icon) or raw_message.get('gift_image'),
+            tray_text=raw_message.get('tray_text'),
+            content=f"送出了 {gift_name}x{gift_cnt}",
+        )
+
+    def _parseInRoomBannerMsg(self, payload):
+        """直播间横幅消息，部分新版礼物提示会以 JSON banner 下发。"""
+        emitted = 0
+        for text in self._extract_banner_json_texts(payload):
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+
+            for event in self._extract_banner_gift_events(data):
+                signature = (
+                    'WebcastInRoomBannerMessage',
+                    event.get('user_id'),
+                    event.get('user_name'),
+                    event.get('gift_id'),
+                    event.get('gift_name'),
+                    event.get('gift_count'),
+                    event.get('content'),
+                )
+                if not self._remember_gift_event(signature):
+                    continue
+
+                self._log(f"【礼物banner】{event.get('user_name')} {event.get('content')}")
+                self._emit_event(
+                    'gift',
+                    live_id=self.live_id,
+                    room_id=self.room_id,
+                    method='WebcastInRoomBannerMessage',
+                    user_id=event.get('user_id') or '',
+                    user_name=event.get('user_name') or '匿名用户',
+                    gift_id=event.get('gift_id') or '',
+                    gift_name=event.get('gift_name') or '礼物',
+                    gift_count=event.get('gift_count') or 1,
+                    gift_image=event.get('gift_image') or [],
+                    content=event.get('content') or '',
+                )
+                emitted += 1
+
+        if emitted == 0:
+            self._emit_event(
+                'unknown_message',
+                live_id=self.live_id,
+                room_id=self.room_id,
+                method='WebcastInRoomBannerMessage',
+                payload_size=len(payload or b''),
+            )
     
     def _parseLikeMsg(self, payload):
         '''点赞消息'''

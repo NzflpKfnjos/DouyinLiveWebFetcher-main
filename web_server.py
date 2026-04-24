@@ -13,7 +13,8 @@ from urllib.parse import urlparse
 
 from liveMan import DouyinLiveWebFetcher
 
-SELECTABLE_EVENT_TYPES = {"chat", "like"}
+SELECTABLE_EVENT_TYPES = {"chat", "gift", "like"}
+DEBUG_EVENT_TYPES = {"packet", "parse_error", "unknown_message"}
 
 
 class LiveMessageWebApp:
@@ -173,7 +174,7 @@ class LiveMessageRequestHandler(BaseHTTPRequestHandler):
                 try:
                     payload = client_queue.get(timeout=15)
                     event_type = payload.get("type")
-                    if event_type not in SELECTABLE_EVENT_TYPES:
+                    if event_type not in SELECTABLE_EVENT_TYPES and event_type not in DEBUG_EVENT_TYPES:
                         continue
                     data = json.dumps(payload, ensure_ascii=False)
                     chunk = f"event: {event_type}\ndata: {data}\n\n".encode("utf-8")

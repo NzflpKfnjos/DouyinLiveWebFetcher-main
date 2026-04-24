@@ -141,6 +141,12 @@ class DouyinLiveWebFetcher:
         self.live_id = live_id
         self.event_handler = event_handler
         self.verbose = verbose
+        self._message_parsers = {
+            method: getattr(self, parser_name)
+            for method, parser_name in self.MESSAGE_PARSER_NAMES.items()
+        }
+        self._recent_gift_events = {}
+        self._recent_gift_events_next_prune = 0.0
         self.host = "https://www.douyin.com/"
         self.live_url = "https://live.douyin.com/"
         self.ws = None
@@ -265,15 +271,23 @@ class DouyinLiveWebFetcher:
 
     def _remember_gift_event(self, signature, ttl_seconds=30):
         now = time.time()
-        if not hasattr(self, '_recent_gift_events'):
-            self._recent_gift_events = {}
-        self._recent_gift_events = {
-            key: created_at for key, created_at in self._recent_gift_events.items()
-            if now - created_at < ttl_seconds
-        }
-        if signature in self._recent_gift_events:
+        recent_events = self._recent_gift_events
+        if signature in recent_events:
             return False
-        self._recent_gift_events[signature] = now
+
+        # This method runs on every gift-like event.  Rebuilding the whole TTL
+        # dictionary on each call makes high-message rooms pay O(n) work per
+        # event.  Prune in place at most once per second (or when the cache has
+        # grown large) so normal dedupe remains O(1) while stale signatures are
+        # still bounded by the same TTL window.
+        if now >= self._recent_gift_events_next_prune or len(recent_events) > 4096:
+            expired_before = now - ttl_seconds
+            for key, created_at in list(recent_events.items()):
+                if created_at < expired_before:
+                    del recent_events[key]
+            self._recent_gift_events_next_prune = now + 1.0
+
+        recent_events[signature] = now
         return True
 
     @staticmethod
@@ -1022,15 +1036,16 @@ class DouyinLiveWebFetcher:
         if response.heartbeat_duration:
             self._heartbeat_interval_seconds = max(5.0, response.heartbeat_duration / 1000)
 
-        methods = [msg.method for msg in response.messages_list]
-        self._emit_event(
-            'packet',
-            live_id=self.live_id,
-            room_id=self.room_id,
-            message_count=len(response.messages_list),
-            methods=methods,
-            heartbeat_duration=response.heartbeat_duration,
-        )
+        messages = response.messages_list
+        if self.event_handler is not None:
+            self._emit_event(
+                'packet',
+                live_id=self.live_id,
+                room_id=self.room_id,
+                message_count=len(messages),
+                methods=[msg.method for msg in messages],
+                heartbeat_duration=response.heartbeat_duration,
+            )
 
         if ws is not None and response.need_ack:
             ack = PushFrame(
@@ -1040,12 +1055,13 @@ class DouyinLiveWebFetcher:
             ).SerializeToString()
             ws.send(ack, websocket.ABNF.OPCODE_BINARY)
 
-        for msg in response.messages_list:
+        parsers = self._message_parsers
+        for msg in messages:
             method = msg.method
             try:
-                parser_name = self.MESSAGE_PARSER_NAMES.get(method)
-                if parser_name is not None:
-                    getattr(self, parser_name)(msg.payload)
+                parser = parsers.get(method)
+                if parser is not None:
+                    parser(msg.payload)
                 elif self._is_gift_method(method):
                     self._parseGiftMsg(msg.payload, method=method)
                 else:

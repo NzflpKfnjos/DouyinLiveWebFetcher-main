@@ -38,10 +38,30 @@ The same run emitted browser-selectable events through the production dispatch p
 
 All gift events observed during that window were `WebcastFansclubMessage`; no live non-fansclub `WebcastGift*Message` appeared in that sample window. Regression coverage therefore locks the non-fansclub path with protobuf `GiftMessage` payloads and the real method fallback (`WebcastGiftSyncMessage`) so that any real `WebcastGift*...Message` method delivered by `/webcast/im/fetch/` is parsed, stored by `LiveMessageWebApp`, serialized to SSE/API clients, and rendered by the unchanged gift UI.
 
+## Additional logged-in room evidence (`https://live.douyin.com/LYG9199`)
+
+Using the user-provided logged-in cookie for `https://live.douyin.com/LYG9199`,
+the resolved room id was `7632170663536642868`.
+
+A 10-minute observation window produced **real non-fansclub gift traffic** on
+both the websocket and protobuf fetch paths:
+
+| Transport | Gift total | Non-fansclub total | Methods |
+| --- | ---: | ---: | --- |
+| websocket | 18 | 2 | `WebcastFansclubMessage` ×16, `WebcastGiftIconFlashMessage` ×2 |
+| fetch | 18 | 2 | `WebcastFansclubMessage` ×16, `WebcastGiftIconFlashMessage` ×2 |
+
+This confirms that `WebcastGiftIconFlashMessage` is a real non-fansclub gift
+method that the browser-visible gift path must preserve. The runtime now routes
+that method directly to `_parseGiftMsg` instead of relying only on the generic
+gift-name heuristic.
+
 ## Regression evidence added
 
 `tests/test_web_gift_visibility.py` verifies that:
 
 1. A non-fansclub protobuf `GiftMessage` parsed by `DouyinLiveWebFetcher._parseGiftMsg` reaches `LiveMessageWebApp` history with `type=gift`, `method=WebcastGiftMessage`, `gift_name`, `gift_count`, and browser display `content`.
 2. Gift events remain JSON/SSE serializable and are delivered to web subscribers without changing the web UI contract.
-
+3. A real-room non-fansclub method shape (`WebcastGiftIconFlashMessage`) also
+   reaches the web history as a normal `gift` event with its original method
+   preserved.

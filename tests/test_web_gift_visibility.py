@@ -2,7 +2,7 @@ import json
 import unittest
 
 from liveMan import DouyinLiveWebFetcher
-from protobuf.douyin import GiftMessage, GiftStruct, Image, User
+from protobuf.douyin import GiftMessage, GiftStruct, Image, Message, Response, User
 from web_server import LiveMessageWebApp
 
 
@@ -59,6 +59,40 @@ class WebGiftVisibilityTests(unittest.TestCase):
             self.assertEqual(app.get_messages_snapshot(), [event])
         finally:
             app.remove_subscriber(subscriber)
+
+    def test_real_gift_icon_flash_message_reaches_web_history(self):
+        app = LiveMessageWebApp("LYG9199", history_size=10)
+        fetcher = DouyinLiveWebFetcher(
+            "LYG9199",
+            event_handler=app.publish_event,
+            verbose=False,
+        )
+        payload = GiftMessage(
+            gift_id=2048,
+            combo_count=2,
+            user=User(id=456, nick_name="真实礼物观众"),
+            gift=GiftStruct(
+                id=2048,
+                name="玫瑰",
+                image=Image(url_list_list=["https://example.test/rose.png"]),
+            ),
+        ).SerializeToString()
+        response = Response(
+            messages_list=[
+                Message(method="WebcastGiftIconFlashMessage", payload=payload),
+            ]
+        )
+
+        fetcher._dispatch_response(response)
+
+        snapshot = app.get_messages_snapshot()
+        self.assertEqual(len(snapshot), 1)
+        self.assertEqual(snapshot[0]["type"], "gift")
+        self.assertEqual(snapshot[0]["method"], "WebcastGiftIconFlashMessage")
+        self.assertEqual(snapshot[0]["user_name"], "真实礼物观众")
+        self.assertEqual(snapshot[0]["gift_name"], "玫瑰")
+        self.assertEqual(snapshot[0]["gift_count"], 2)
+        self.assertEqual(snapshot[0]["content"], "送出了 玫瑰x2")
 
 
 if __name__ == "__main__":

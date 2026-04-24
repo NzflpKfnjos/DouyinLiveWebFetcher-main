@@ -112,6 +112,7 @@ class DouyinLiveWebFetcher:
     MESSAGE_PARSER_NAMES = {
         'WebcastChatMessage': '_parseChatMsg',  # 聊天消息
         'WebcastGiftMessage': '_parseGiftMsg',  # 礼物消息
+        'WebcastGiftIconFlashMessage': '_parseGiftMsg',  # 真实礼物闪屏消息
         'WebcastLikeMessage': '_parseLikeMsg',  # 点赞消息
         'WebcastMemberMessage': '_parseMemberMsg',  # 进入直播间消息
         'WebcastSocialMessage': '_parseSocialMsg',  # 关注消息
@@ -143,10 +144,14 @@ class DouyinLiveWebFetcher:
         self.live_id = live_id
         self.event_handler = event_handler
         self.verbose = verbose
-        self._message_parsers = {
-            method: getattr(self, parser_name)
-            for method, parser_name in self.MESSAGE_PARSER_NAMES.items()
-        }
+        self._message_parsers = {}
+        for method, parser_name in self.MESSAGE_PARSER_NAMES.items():
+            if parser_name == '_parseGiftMsg':
+                self._message_parsers[method] = (
+                    lambda payload, _method=method: self._parseGiftMsg(payload, method=_method)
+                )
+            else:
+                self._message_parsers[method] = getattr(self, parser_name)
         self._recent_gift_events = {}
         self._recent_gift_events_next_prune = 0.0
         self.host = "https://www.douyin.com/"

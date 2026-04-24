@@ -279,6 +279,48 @@ button {
   background: transparent;
 }
 
+.panel-heading-group {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.view-toggle-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.view-toggle {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(30, 64, 175, 0.12);
+  border-radius: 999px;
+  color: var(--primary);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 180ms ease-out, box-shadow 180ms ease-out, background 180ms ease-out, border-color 180ms ease-out, color 180ms ease-out;
+}
+
+.view-toggle:hover {
+  border-color: rgba(30, 64, 175, 0.28);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.view-toggle.is-active {
+  border-color: rgba(59, 130, 246, 0.3);
+  color: var(--heading);
+  background: rgba(219, 234, 254, 0.86);
+  box-shadow: 0 8px 20px rgba(59, 130, 246, 0.12);
+}
+
+.view-toggle:focus-visible {
+  outline: 3px solid rgba(245, 158, 11, 0.38);
+  outline-offset: 3px;
+}
+
 .section-kicker {
   display: block;
   margin-bottom: 8px;
@@ -642,6 +684,15 @@ h2 {
 
   .secondary-button {
     width: 100%;
+  }
+
+  .view-toggle-group {
+    width: 100%;
+  }
+
+  .view-toggle {
+    flex: 1 1 140px;
+    justify-content: center;
   }
 
   .message-card {

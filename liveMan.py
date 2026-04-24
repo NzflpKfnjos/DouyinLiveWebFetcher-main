@@ -246,8 +246,12 @@ class DouyinLiveWebFetcher:
     def _is_probable_gift_text(text):
         if not text:
             return False
-        gift_words = ('送出', '送了', '礼物', 'gift', 'diamond', '钻石', '抖币')
-        excluded_words = ('礼物展馆', '礼物面板', 'gift_panel', 'giftpanel', 'gift_sort', 'gift_vote')
+        gift_words = ('送出', '送了', '赠送', '礼物', 'diamond', '钻石', '抖币')
+        excluded_words = (
+            '礼物展馆', '礼物面板', 'gift_panel', 'giftpanel', 'gift_sort', 'gift_vote',
+            'gift_task', 'quota_task', 'condition_', 'instance', '多阶段任务',
+            'anchor_flow', 'anchor_mvp', 'revenue', 'webcast_revenue',
+        )
         text_lower = str(text).lower()
         return any(word in text_lower for word in gift_words) and not any(word in text_lower for word in excluded_words)
 
@@ -271,6 +275,38 @@ class DouyinLiveWebFetcher:
             return False
         self._recent_gift_events[signature] = now
         return True
+
+    @staticmethod
+    def _text_has_gift_piece(text):
+        for piece in getattr(text, 'pieces_list', []) or []:
+            gift_value = getattr(piece, 'gift_value', None)
+            if not gift_value:
+                continue
+            name_ref = getattr(gift_value, 'name_ref', None)
+            if getattr(gift_value, 'gift_id', 0) or getattr(name_ref, 'default_pattern', ''):
+                return True
+        return False
+
+    @staticmethod
+    def _gift_name_from_text_pieces(text):
+        for piece in getattr(text, 'pieces_list', []) or []:
+            gift_value = getattr(piece, 'gift_value', None)
+            if not gift_value:
+                continue
+            name_ref = getattr(gift_value, 'name_ref', None)
+            gift_name = getattr(name_ref, 'default_pattern', '') if name_ref else ''
+            if gift_name:
+                return gift_name
+        return ''
+
+    @staticmethod
+    def _gift_id_from_text_pieces(text):
+        for piece in getattr(text, 'pieces_list', []) or []:
+            gift_value = getattr(piece, 'gift_value', None)
+            gift_id = getattr(gift_value, 'gift_id', 0) if gift_value else 0
+            if gift_id:
+                return str(gift_id)
+        return ''
 
     @staticmethod
     def _decode_proto_string(value):
@@ -594,11 +630,28 @@ class DouyinLiveWebFetcher:
                 texts.extend(self._extract_banner_json_texts(value))
         return texts
 
+    def _has_explicit_gift_json_signal(self, value):
+        if isinstance(value, dict):
+            gift_keys = {
+                'gift_name', 'giftName', 'gift_desc', 'giftDesc', 'gift_title', 'giftTitle',
+                'gift_id', 'giftId', 'gift_count', 'giftCount', 'repeat_count', 'repeatCount',
+            }
+            if any(key in value and value.get(key) not in (None, '') for key in gift_keys):
+                return True
+            return any(self._has_explicit_gift_json_signal(child) for child in value.values())
+        if isinstance(value, list):
+            return any(self._has_explicit_gift_json_signal(child) for child in value)
+        return False
+
     def _extract_banner_gift_events(self, value):
         events = []
+        events_by_signature = {}
         for item in self._iter_json_objects(value):
             combined_text = ' '.join(self._short_text(text) for text in self._iter_json_strings(item))
-            if not self._is_probable_gift_text(combined_text):
+            text_user_name, text_gift_name = self._extract_gift_user_from_text(combined_text)
+            has_text_gift = self._is_probable_gift_text(combined_text)
+            has_explicit_gift = self._has_explicit_gift_json_signal(item)
+            if not has_explicit_gift and not (has_text_gift and text_gift_name):
                 continue
 
             props = item.get('basic_props') if isinstance(item.get('basic_props'), dict) else {}
@@ -607,13 +660,13 @@ class DouyinLiveWebFetcher:
             icon_src = props.get('icon_src') or item.get('icon') or item.get('image') or item.get('avatar') or []
             image_urls = icon_src if isinstance(icon_src, list) else [icon_src] if icon_src else []
 
-            user_name = self._short_text(
+            explicit_user_name = self._short_text(
                 item.get('user_name') or item.get('userName') or item.get('nickname') or item.get('nick_name')
                 or self._first_json_value(item, ('user_name', 'userName', 'nickname', 'nick_name'))
             )
             gift_name = self._short_text(
-                item.get('gift_name') or item.get('giftName') or item.get('name') or item.get('gift_desc')
-                or self._first_json_value(item, ('gift_name', 'giftName', 'gift_desc', 'giftDesc', 'gift_title'))
+                item.get('gift_name') or item.get('giftName') or item.get('gift_desc')
+                or self._first_json_value(item, ('gift_name', 'giftName', 'gift_desc', 'giftDesc', 'gift_title', 'giftTitle'))
             )
             count = self._first_positive_value(
                 item.get('gift_count'), item.get('giftCount'), item.get('count'), item.get('repeat_count'),
@@ -622,20 +675,41 @@ class DouyinLiveWebFetcher:
             )
 
             content = desc or title or combined_text
+            if not text_gift_name:
+                text_user_name, text_gift_name = self._extract_gift_user_from_text(content)
             if not gift_name:
-                gift_name = self._extract_gift_name_from_text(content) or self._extract_gift_name_from_text(combined_text)
+                gift_name = text_gift_name or self._extract_gift_name_from_text(content) or self._extract_gift_name_from_text(combined_text)
             gift_name = self._clean_gift_name(gift_name)
+            user_name = explicit_user_name or text_user_name
+
+            if not user_name or not gift_name:
+                continue
+
             count = self._first_positive_value(count, self._extract_gift_count_from_text(content), default=1)
 
-            events.append({
+            event = {
                 'user_id': str(item.get('user_id') or item.get('userId') or ''),
-                'user_name': user_name or title or '匿名用户',
+                'user_name': user_name,
                 'gift_id': str(item.get('gift_id') or item.get('giftId') or ''),
-                'gift_name': gift_name or '礼物',
+                'gift_name': gift_name,
                 'gift_count': count,
                 'gift_image': [url for url in image_urls if isinstance(url, str) and url.startswith(('http://', 'https://'))],
                 'content': content,
-            })
+            }
+            signature = (event['user_id'], event['user_name'], event['gift_id'], event['gift_name'], event['gift_count'])
+            existing_event = events_by_signature.get(signature)
+            if existing_event is not None:
+                if not existing_event['user_id'] and event['user_id']:
+                    existing_event['user_id'] = event['user_id']
+                if not existing_event['gift_id'] and event['gift_id']:
+                    existing_event['gift_id'] = event['gift_id']
+                if not existing_event['gift_image'] and event['gift_image']:
+                    existing_event['gift_image'] = event['gift_image']
+                if len(str(event['content'] or '')) > len(str(existing_event['content'] or '')):
+                    existing_event['content'] = event['content']
+                continue
+            events_by_signature[signature] = event
+            events.append(event)
         return events
 
     def _text_to_plain(self, text):
@@ -670,10 +744,53 @@ class DouyinLiveWebFetcher:
 
         return ''.join(pieces) or getattr(text, 'default_patter', '') or ''
 
+    def _extract_chat_gift_event(self, message):
+        gift_image = self._first_image_urls(message.gift_image)
+        plain_rtf = self._text_to_plain(message.rtf_content)
+        candidate_text = ' '.join(
+            text.strip() for text in (plain_rtf, message.content)
+            if isinstance(text, str) and text.strip()
+        )
+        has_gift_piece = self._text_has_gift_piece(message.rtf_content)
+
+        if not gift_image and not has_gift_piece:
+            return None
+
+        gift_name = (
+            self._extract_gift_name_from_text(candidate_text)
+            or self._gift_name_from_text_pieces(message.rtf_content)
+        )
+        gift_name = self._clean_gift_name(gift_name)
+        if not gift_name:
+            return None
+
+        gift_count = self._first_positive_value(
+            self._extract_gift_count_from_text(candidate_text),
+            default=1,
+        )
+        return {
+            'user_id': str(message.user.id or ''),
+            'user_name': message.user.nick_name or '匿名用户',
+            'gift_id': self._gift_id_from_text_pieces(message.rtf_content),
+            'gift_name': gift_name,
+            'gift_count': gift_count,
+            'gift_image': gift_image,
+            'content': candidate_text or f"送出了 {gift_name}x{gift_count}",
+        }
+
     @staticmethod
     def _parse_cookie_string(cookie: str) -> dict:
+        text = (cookie or '').strip()
+        if text.startswith('{'):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                return {str(key): str(value) for key, value in parsed.items() if value is not None}
+
         cookies = {}
-        for item in (cookie or '').split(';'):
+        for item in text.split(';'):
             part = item.strip()
             if not part or '=' not in part:
                 continue
@@ -1100,9 +1217,40 @@ class DouyinLiveWebFetcher:
     def _parseChatMsg(self, payload):
         """聊天消息"""
         message = ChatMessage().parse(payload)
+        gift_event = self._extract_chat_gift_event(message)
+        if gift_event:
+            signature = (
+                'WebcastChatMessage',
+                gift_event['user_id'],
+                str(getattr(message.common, 'log_id', '') or getattr(message.common, 'msg_id', '') or gift_event['gift_id']),
+                gift_event['gift_name'],
+                gift_event['gift_count'],
+            )
+            if not self._remember_gift_event(signature):
+                return
+            self._log(
+                f"【礼物chat】{gift_event['user_name']} 送出了 "
+                f"{gift_event['gift_name']}x{gift_event['gift_count']}"
+            )
+            self._emit_event(
+                'gift',
+                live_id=self.live_id,
+                room_id=self.room_id,
+                method='WebcastChatMessage',
+                user_id=gift_event['user_id'],
+                user_name=gift_event['user_name'],
+                gift_id=gift_event['gift_id'],
+                gift_name=gift_event['gift_name'],
+                gift_count=gift_event['gift_count'],
+                gift_image=gift_event['gift_image'],
+                content=f"送出了 {gift_event['gift_name']}x{gift_event['gift_count']}",
+                chat_rtf_text=gift_event['content'],
+            )
+            return
+
         user_name = message.user.nick_name
         user_id = message.user.id
-        content = message.content
+        content = message.content or self._text_to_plain(message.rtf_content)
         self._log(f"【聊天msg】[{user_id}]{user_name}: {content}")
         self._emit_event(
             'chat',
@@ -1244,10 +1392,42 @@ class DouyinLiveWebFetcher:
         self._log(f"【统计msg】当前观看人数: {current}, 累计观看人数: {total}")
     
     def _parseFansclubMsg(self, payload):
-        '''粉丝团消息'''
+        '''粉丝团消息。抖音 Web 会把点亮粉丝团作为礼物动效展示。'''
         message = FansclubMessage().parse(payload)
         content = message.content
+        user_name = message.user.nick_name or self._extract_fansclub_user_name(content) or '匿名用户'
+        user_id = message.user.id or message.user.id_str or ''
+        gift_name = self._fansclub_gift_name(message.type, content)
         self._log(f"【粉丝团msg】 {content}")
+        if not gift_name:
+            return
+
+        self._emit_event(
+            'gift',
+            live_id=self.live_id,
+            room_id=self.room_id,
+            method='WebcastFansclubMessage',
+            user_id=str(user_id),
+            user_name=user_name,
+            gift_id='fansclub',
+            gift_name=gift_name,
+            gift_count=1,
+            content=f"送出了 {gift_name}x1",
+            fansclub_content=content,
+        )
+
+    @staticmethod
+    def _extract_fansclub_user_name(content):
+        match = re.search(r'恭喜\s+(.+?)\s+成为第', str(content or ''))
+        return match.group(1).strip() if match else ''
+
+    @staticmethod
+    def _fansclub_gift_name(message_type, content):
+        if message_type == 2 or '成为第' in str(content or ''):
+            return '点亮粉丝团'
+        if message_type == 1 or '升级' in str(content or ''):
+            return '粉丝团升级'
+        return ''
     
     def _parseEmojiChatMsg(self, payload):
         '''聊天表情包消息'''
@@ -1288,4 +1468,3 @@ class DouyinLiveWebFetcher:
         message = RoomStreamAdaptationMessage().parse(payload)
         adaptationType = message.adaptation_type
         self._log(f'直播间adaptation: {adaptationType}')
-

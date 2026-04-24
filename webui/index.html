@@ -17,9 +17,14 @@
     <section class="workspace-grid">
       <section class="chat-panel glass-card" aria-labelledby="chatTitle">
         <div class="panel-header">
-          <div>
-            <!-- <p class="section-kicker">WebcastChatMessage</p> -->
-            <h1 id="chatTitle">实时聊天</h1>
+          <div class="panel-heading-group">
+            <div>
+              <h1 id="chatTitle">实时消息</h1>
+            </div>
+            <div class="view-toggle-group" aria-label="消息视图切换">
+              <button class="view-toggle is-active" type="button" data-view-filter="all" aria-pressed="true">全部消息</button>
+              <button class="view-toggle" type="button" data-view-filter="gift" aria-pressed="false">仅看礼物</button>
+            </div>
           </div>
           <button id="clearButton" class="secondary-button" type="button">清空视图</button>
         </div>
@@ -29,7 +34,6 @@
       <aside class="wheel-panel glass-card" aria-labelledby="countdownTitle">
         <div class="panel-header compact">
           <div>
-            <!-- <p class="section-kicker">Countdown Select</p> -->
             <h2 id="countdownTitle">倒计时选人</h2>
           </div>
         </div>
@@ -45,8 +49,6 @@
         <div class="draw-result result-focus-card">
           <span>最终选中</span>
           <div id="winnerDisplay" class="winner-display">等待开始</div>
-          <!-- <strong id="winnerName">暂无</strong>
-          <p id="winnerMeta">倒计时结束时，将读取当前最新一条聊天消息的发送用户。</p> -->
         </div>
       </aside>
     </section>

@@ -7,6 +7,7 @@
 # @Project:     douyinLiveWebFetcher
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -14,27 +15,78 @@ from liveMan import DouyinLiveWebFetcher
 from web_server import LiveMessageWebApp
 
 
-DEFAULT_LIVE_ID = '146551446786'
+DEFAULT_LIVE_ID = '822037288014'
 ENV_FILE = Path(__file__).resolve().parent / '.env'
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def _cookie_json_to_header(value: str) -> str:
+    text = _strip_quotes(value)
+    if not text.lstrip().startswith('{'):
+        return text
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+    if not isinstance(parsed, dict):
+        return text
+
+    return '; '.join(
+        f'{key}={cookie_value}'
+        for key, cookie_value in parsed.items()
+        if cookie_value is not None
+    )
+
+
+def _normalize_env_value(key: str, value: str) -> str:
+    value = _strip_quotes(value)
+    if key == 'DOUYIN_COOKIE':
+        return _cookie_json_to_header(value)
+    return value
+
+
+def _iter_dotenv_assignments(text: str):
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index]
+        line = raw_line.strip()
+        index += 1
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value_lines = [value.rstrip()]
+
+        stripped_value = value.strip()
+        if stripped_value.startswith('{'):
+            brace_balance = stripped_value.count('{') - stripped_value.count('}')
+            while brace_balance > 0 and index < len(lines):
+                continuation = lines[index].rstrip()
+                index += 1
+                value_lines.append(continuation)
+                brace_balance += continuation.count('{') - continuation.count('}')
+
+        yield key, '\n'.join(value_lines)
 
 
 def load_dotenv(env_file: Path = ENV_FILE):
     if not env_file.exists():
         return
 
-    for raw_line in env_file.read_text(encoding='utf-8').splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        key, value = line.split('=', 1)
-        key = key.strip()
+    for key, value in _iter_dotenv_assignments(env_file.read_text(encoding='utf-8')):
         if not key or key in os.environ:
             continue
-
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
-        os.environ[key] = value
+        os.environ[key] = _normalize_env_value(key, value)
 
 
 def parse_args():
@@ -48,6 +100,7 @@ def parse_args():
     args = parser.parse_args()
     if args.cookie.strip().lower() == 'default':
         args.cookie = os.getenv('DOUYIN_COOKIE', '')
+    args.cookie = _cookie_json_to_header(args.cookie)
     return args
 
 

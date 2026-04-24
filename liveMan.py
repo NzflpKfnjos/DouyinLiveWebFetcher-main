@@ -272,8 +272,11 @@ class DouyinLiveWebFetcher:
     def _remember_gift_event(self, signature, ttl_seconds=30):
         now = time.time()
         recent_events = self._recent_gift_events
-        if signature in recent_events:
-            return False
+        created_at = recent_events.get(signature)
+        if created_at is not None:
+            if now - created_at < ttl_seconds:
+                return False
+            del recent_events[signature]
 
         # This method runs on every gift-like event.  Rebuilding the whole TTL
         # dictionary on each call makes high-message rooms pay O(n) work per

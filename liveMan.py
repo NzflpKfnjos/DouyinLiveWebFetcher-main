@@ -280,9 +280,9 @@ class DouyinLiveWebFetcher:
 
         # This method runs on every gift-like event.  Rebuilding the whole TTL
         # dictionary on each call makes high-message rooms pay O(n) work per
-        # event.  Prune in place at most once per second (or when the cache has
-        # grown large) so normal dedupe remains O(1) while stale signatures are
-        # still bounded by the same TTL window.
+        # event.  Prune in place at most once per second so normal dedupe
+        # remains O(1) while stale signatures are still bounded by the same TTL
+        # window.
         if now >= self._recent_gift_events_next_prune:
             expired_before = now - ttl_seconds
             for key, created_at in list(recent_events.items()):

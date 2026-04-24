@@ -283,7 +283,7 @@ class DouyinLiveWebFetcher:
         # event.  Prune in place at most once per second (or when the cache has
         # grown large) so normal dedupe remains O(1) while stale signatures are
         # still bounded by the same TTL window.
-        if now >= self._recent_gift_events_next_prune or len(recent_events) > 4096:
+        if now >= self._recent_gift_events_next_prune:
             expired_before = now - ttl_seconds
             for key, created_at in list(recent_events.items()):
                 if created_at < expired_before:

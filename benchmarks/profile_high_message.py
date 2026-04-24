@@ -167,7 +167,8 @@ def _profile_once(func: Callable[[], None], top: int) -> tuple[float, float, lis
 
     stats = pstats.Stats(profiler, stream=io.StringIO()).strip_dirs().sort_stats("cumtime")
     hotspots = []
-    for (filename, line, name), stat in list(stats.stats.items())[:top]:
+    for (filename, line, name) in stats.fcn_list[:top]:
+        stat = stats.stats[(filename, line, name)]
         primitive_calls, total_calls, total_time, cumulative_time, _callers = stat
         hotspots.append(
             {
